@@ -40,7 +40,8 @@ services:
     build:
       context: ./mcp
       dockerfile: Dockerfile
-    command: uvicorn main:app --host 0.0.0.0 --port 5000
+    # ✅ FIX: use python -m uvicorn (more reliable than `uvicorn ...`)
+    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5000"]
     environment:
       ENABLE_ML: "false"
       MODEL_PROVIDER: openai
@@ -48,18 +49,19 @@ services:
       MODEL_API_KEY: ${OPENAI_API_KEY}   # set in your shell or .env
     ports: ["5000:5000"]
     restart: unless-stopped
+    # ✅ FIX: remove curl dependency (curl may not exist in the image)
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:5000/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=2)"]
       interval: 10s
       timeout: 5s
       retries: 10
 
-  
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # ✅ FIX: use python -m uvicorn (more reliable than `uvicorn ...`)
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports: ["18080:8000"]
     environment:
       DB_DSN: postgresql://postgres:postgres@db:5432/candidate_news
@@ -77,26 +79,20 @@ services:
       mcp:
         condition: service_started    # keep started until MCP health is fixed
     restart: unless-stopped
-    # healthcheck:
-    #   test: ["CMD-SHELL","curl -fsS http://localhost:8000/api/health || exit 1"]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 10
-    #   start_period: 20s
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2)"]
       interval: 5s
       timeout: 5s
-      retries: 12
-      start_period: 20s
-
+      retries: 20
+      start_period: 60s
 
   enricher:
     build: ./enricher
     command: python -u main.py
     depends_on:
       backend:
-        condition: service_healthy
+        # ✅ FIX: don't block whole stack if backend healthcheck is still stabilizing
+        condition: service_started
     environment:
       DB_DSN: postgresql://postgres:postgres@db:5432/candidate_news
       BACKEND_URL: http://backend:8000
@@ -115,7 +111,8 @@ services:
     ports: ["18501:8501"]
     depends_on:
       backend:
-        condition: service_healthy
+        # ✅ FIX: don't block whole stack if backend healthcheck is still stabilizing
+        condition: service_started
     restart: unless-stopped
 
   loader:
