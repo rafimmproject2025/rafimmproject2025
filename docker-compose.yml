@@ -1,0 +1,137 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: candidate_news
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:8.13
+    container_name: pgadmin
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin123}
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "True"
+      PGADMIN_CONFIG_CONSOLE_LOG_LEVEL: "10"
+    ports: ["18000:80"]
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost/misc/ping', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mcp:
+    build:
+      context: ./mcp
+      dockerfile: Dockerfile
+    command: uvicorn main:app --host 0.0.0.0 --port 5000
+    environment:
+      ENABLE_ML: "false"
+      MODEL_PROVIDER: openai
+      MODEL_ID: gpt-4o-mini
+      MODEL_API_KEY: ${OPENAI_API_KEY}   # set in your shell or .env
+    ports: ["5000:5000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    environment:
+      DB_DSN: postgresql://postgres:postgres@db:5432/candidate_news
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      TZ: Asia/Dhaka
+      JWT_SECRET: ${JWT_SECRET:-dev-secret}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-1440}
+      DEFAULT_ADMIN_USER: ${DEFAULT_ADMIN_USER:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-admin123}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-service-token}
+    depends_on:
+      db:
+        condition: service_healthy
+      mcp:
+        condition: service_started    # keep started until MCP health is fixed
+    restart: unless-stopped
+    # healthcheck:
+    #   test: ["CMD-SHELL","curl -fsS http://localhost:8000/api/health || exit 1"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 10
+    #   start_period: 20s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+
+  enricher:
+    build: ./enricher
+    command: python -u main.py
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      DB_DSN: postgresql://postgres:postgres@db:5432/candidate_news
+      BACKEND_URL: http://backend:8000
+      MCP_URL: http://mcp:5000/mcp
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-service-token}
+    restart: unless-stopped
+
+  streamlit_app:
+    build: ./streamlit_app
+    environment:
+      BACKEND_URL: http://backend:8000   # container-to-container DNS
+      API_URL: http://backend:8000
+      TZ: Asia/Dhaka
+    volumes:
+      - ./data:/data
+    ports: ["18501:8501"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  loader:
+    build: ./loader
+    environment:
+      DB_DSN: postgresql://postgres:postgres@db:5432/candidate_news
+      CODEBOOK_XLSX: /data/Bangladesh_Election_Media_Monitoring_Codebook.xlsx
+      NEWS_XLSX: /data/Prothom Alo 2024 Election News.xlsx
+      TZ: Asia/Dhaka
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python","-u","load_from_xlsx.py"]
+
+volumes:
+  dbdata:
+  pgadmin_data:

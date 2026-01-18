@@ -1,0 +1,13 @@
+httpx==0.27.2
+
+requests
+psycopg[binary]
+beautifulsoup4
+lxml
+feedparser
+readability-lxml
+python-dotenv
+rapidfuzz
+pyahocorasick
+spacy
+

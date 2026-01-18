@@ -1,0 +1,39 @@
+Install: Docker Desktop.
+Clone and set env:
+
+git clone <repo> news-agent && cd news-agent
+
+Set OPENAI_API_KEY (and optionally OPENAI_MODEL) in your shell or .env.
+
+Start DB and schema:
+docker compose up -d db
+
+docker compose exec -T db psql -U postgres -d candidate_news -f /docker-entrypoint-initdb.d/schema.sql
+
+Load data:
+Place the two Excel files into ./data/
+docker compose run --rm loader
+
+Run if Date Missing:
+docker compose run --rm -w /app -e DB_DSN="postgresql://postgres:postgres@db:5432/candidate_news" -e NEWS_XLSX="/data/Prothom Alo 2024 Election News.xlsx" -v ${PWD}:/app -v ${PWD}\data:/data loader python loader/backfill_published_at.py
+
+
+Build auto categories:
+docker compose exec -T backend python auto_category_pipeline.py --mode init --dsn postgresql://postgres:postgres@db:5432/candidate_news --use-embeddings --min-cluster-size 5
+
+Assign articles (quick lexical):
+docker compose exec -T backend python auto_category_pipeline.py --mode update --dsn postgresql://postgres:postgres@db:5432/candidate_news --threshold 0.38 --min-cluster-size 5 --limit 2000
+
+Promote auto categories to main + apply labels:
+docker compose cp backend/promote_auto_bulk.py backend:/app/promote_auto_bulk.py
+docker compose exec -T backend python /app/promote_auto_bulk.py
+
+Run services:
+docker compose up -d backend streamlit_app mcp enricher
+Backend: http://localhost:8000/api/health
+
+Streamlit UI: http://localhost:18501
+
+Daily use:
+Use Streamlit Dashboard for bulk classify/generate and review.
+Re-run auto_category_pipeline.py --mode update and promote_auto_bulk.py if you ingest new articles and want fresh categories/labels.

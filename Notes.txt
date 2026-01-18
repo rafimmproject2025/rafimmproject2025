@@ -1,0 +1,54 @@
+
+docker compose down -v
+docker compose up -d db (all init SQL runs automatically)
+docker compose run --rm loader
+
+Only Run IF Date is missing:
+docker compose run --rm -w /app -e DB_DSN="postgresql://postgres:postgres@db:5432/candidate_news" -e NEWS_XLSX="/data/Prothom Alo 2024 Election News.xlsx" -v ${PWD}:/app -v ${PWD}\data:/data loader python loader/backfill_published_at.py
+
+
+For ALL Migrate:
+docker compose exec -T db psql -U postgres -d candidate_news -f /docker-entrypoint-initdb.d/schema.sql
+
+
+docker compose exec -T db psql -U postgres -d candidate_news -f /docker-entrypoint-initdb.d/008_article_dimensions.sql
+
+
+docker compose build backend streamlit_app
+docker compose up -d backend streamlit_app
+
+**  Exclusion constraint matching the ON CONFLICT specification; Set unique key
+docker compose exec -T db psql -U postgres -d candidate_news -c "CREATE UNIQUE INDEX IF NOT EXISTS uq_codebook_keyword ON codebook_keyword(category_id, term, lang);"
+
+
+
+docker exec -i news-agent-db-1 psql -U postgres -d candidate_news -c "TRUNCATE auto_category_article, auto_category_centroid, auto_category RESTART IDENTITY CASCADE;"
+
+
+
+docker exec -i news-agent-backend-1 python auto_category_pipeline.py --mode init --dsn postgresql://postgres:postgres@db:5432/candidate_news --use-embeddings --min-cluster-size 5 --limit 50
+
+
+docker compose exec -T db psql -U postgres -d candidate_news -f /docker-entrypoint-initdb.d/006_auto_category_pipeline.sql
+docker compose exec -T db psql -U postgres -d candidate_news -f /docker-entrypoint-initdb.d/007_auto_categories.sql
+docker compose exec -T db psql -U postgres -d candidate_news -f /docker-entrypoint-initdb.d/009_ensure_article_embedding.sql
+
+
+
+docker exec -i news-agent-backend-1 python auto_category_pipeline.py --mode init --dsn postgresql://postgres:postgres@db:5432/candidate_news --use-embeddings --min-cluster-size 5 --limit 50
+
+docker exec -i news-agent-db-1 psql -U postgres -d candidate_news -c "TRUNCATE article_label, article_category_label, codebook_keyword, codebook_category_generate, correction, classification_run, codebook_category CASCADE;"
+
+docker exec -i news-agent-db-1 psql -U postgres -d candidate_news -c "TRUNCATE article_label, article_category_label, codebook_category_generate, classification_run, correction CASCADE;"
+
+docker exec -i news-agent-db-1 psql -U postgres -d candidate_news -c "TRUNCATE codebook_keyword, codebook_category CASCADE;"
+
+
+Fast lexical assign (quick, no embeddings):
+docker exec -i news-agent-backend-1 python auto_category_pipeline.py --mode update --dsn postgresql://postgres:postgres@db:5432/candidate_news --threshold 0.38 --min-cluster-size 5 --limit 2000
+
+(Optional, higher quality) Embeddings assign—longer run:
+docker exec -i news-agent-backend-1 python auto_category_pipeline.py --mode update --dsn postgresql://postgres:postgres@db:5432/candidate_news --use-embeddings --threshold 0.38 --min-cluster-size 5 --limit 2000
+
+Promote all auto categories into main categories and apply labels:
+docker exec -i news-agent-backend-1 python /app/promote_auto_bulk.py
